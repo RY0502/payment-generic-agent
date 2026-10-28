@@ -1,0 +1,43 @@
+{
+  "name": "payment-generic-agent",
+  "version": "1.0.0",
+  "description": "Generic, self-reasoning payment automation agent (LangGraph + FreeTier orchestrator + Playwright).",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "src/agent.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist coverage",
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
+    "start:prod": "node dist/server.js",
+    "pay": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "postinstall": "patch-package && playwright install chromium"
+  },
+  "dependencies": {
+    "@freetier/orchestrator": "git+https://github.com/RY0502/freetier-orchestrator.git#66fdbae053571a5292407889abbce64d6e260cde",
+    "@langchain/core": "1.1.49",
+    "@langchain/langgraph": "1.2.1",
+    "@sparticuz/chromium": "148.0.0",
+    "dotenv": "17.3.1",
+    "form-data": "4.0.5",
+    "mailgun.js": "12.7.1",
+    "playwright": "1.58.2",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.15",
+    "@vitest/coverage-v8": "5.0.5",
+    "patch-package": "8.0.1",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}
