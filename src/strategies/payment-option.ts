@@ -5,6 +5,7 @@
  */
 
 import type { Locator, Page } from "playwright";
+import { selectionStateInPage } from "../dom-functions.js";
 import { locateRef } from "../page-snapshot.js";
 import { clickLocator, escapeRegex, firstVisible, nonEmpty, q, runStrategies, type LocatorStrategy, type StrategyOutcome } from "./common.js";
 
@@ -136,12 +137,31 @@ export const OPTION_STRATEGIES: LocatorStrategy<OptionContext>[] = [
   { name: "iframe-option", find: async ({ page, optionName }) => inFrames(page, optionName) },
 ];
 
-/** Selects the named payment option by trying every strategy in order. */
+/** Selection state of an element (true/false), or null when it exposes none. */
+export async function selectionState(locator: Locator): Promise<boolean | null> {
+  return locator.evaluate(selectionStateInPage).catch(() => null);
+}
+
+/** Clicks a locator (forcing hidden ones) and lets the UI react. */
+async function choose(page: Page, locator: Locator): Promise<void> {
+  const visible = await locator.isVisible().catch(() => false);
+  await clickLocator(locator, { force: !visible });
+  await page.waitForTimeout(1000);
+}
+
+/**
+ * Selects the named payment option by trying every strategy in order. When the snapshot element is known and
+ * still reports "not selected" afterwards (e.g. a broad container was clicked), it is clicked directly.
+ */
 export async function selectPaymentOption(ctx: OptionContext): Promise<StrategyOutcome> {
   await ctx.page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
-  return runStrategies(OPTION_STRATEGIES, ctx, async (locator) => {
-    const visible = await locator.isVisible().catch(() => false);
-    await clickLocator(locator, { force: !visible });
-    await ctx.page.waitForTimeout(1000);
-  });
+  const before = ctx.elementId ? await locateRef(ctx.page, ctx.elementId) : null;
+  const domId = before ? await before.getAttribute("id").catch(() => null) : null;
+  const outcome = await runStrategies(OPTION_STRATEGIES, ctx, (locator) => choose(ctx.page, locator));
+  // Frameworks such as SAP UI5 re-render controls on click, dropping our data-pa-id: fall back to the element's DOM id.
+  const ref = ctx.elementId ? ((await locateRef(ctx.page, ctx.elementId)) ?? (domId ? await nonEmpty(ctx.page.locator(`[id="${q(domId)}"]`)) : null)) : null;
+  if (!ref || (outcome.ok && (await selectionState(ref)) !== false)) return outcome;
+  await choose(ctx.page, ref);
+  const state = await selectionState(ref);
+  return state === false ? { ok: false, message: `clicked "${ctx.optionName}" but it is still not selected` } : { ok: true, strategy: "snapshot-ref (verified)", message: "selected via snapshot-ref" };
 }

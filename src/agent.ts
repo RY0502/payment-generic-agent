@@ -97,6 +97,9 @@ export async function invokeWithRetry(llm: LlmClient, system: string, prompt: st
   return null;
 }
 
+/** Tools that may run while a native dialog is open. */
+const DIALOG_SAFE_TOOLS = new Set(["handle_dialog", "fail_payment", "wait"]);
+
 /** Appends the full step observation to AGENT_TRACE_FILE (debugging aid; disabled when unset). */
 export function traceStep(step: number, call: { name: string; args: unknown }, result: string): void {
   const file = process.env.AGENT_TRACE_FILE;
@@ -169,7 +172,7 @@ export function createPaymentGraph(deps: AgentDeps) {
     let result = await runTool(call.name, call.args);
     let signal = session.takeSignal();
     if (!signal && ACTION_TOOLS.has(call.name)) {
-      signal = await quickSuccessCheck(session);
+      if (!session.browser.hasDialog()) signal = await quickSuccessCheck(session);
       if (!signal) result += `${PAGE_MARKER}${await session.describePage("auto").catch((e) => errorText("snapshot failed", e))}`;
     }
     if (repeats >= 3) result += `\nWARNING: you already tried this exact action ${repeats} times. Try a different approach.`;
@@ -180,14 +183,24 @@ export function createPaymentGraph(deps: AgentDeps) {
     return { ...update, messages: [new ToolMessage({ content: result, tool_call_id: call.id ?? "", name: call.name })] };
   }
 
-  /** Invokes a tool by name, converting exceptions/validation errors to text. */
+  /**
+   * Invokes a tool by name, converting exceptions/validation errors to text. Native browser dialogs
+   * (alert/confirm) block page actions, so the call returns as soon as one opens and asks for handle_dialog.
+   */
   async function runTool(name: string, args: Record<string, unknown>): Promise<string> {
     const tool = runtime.tools.find((t) => t.name === name);
     if (!tool) return `ERROR: unknown tool ${name}`;
+    const browser = runtime.session!.browser;
+    if (browser.hasDialog() && !DIALOG_SAFE_TOOLS.has(name)) {
+      return `ERROR: a native browser dialog is open ("${browser.getDialogMessage()}"). Call handle_dialog first.`;
+    }
+    const invocation = tool.invoke(args).then(String, (error) => errorText(`invalid call to ${name}`, error));
+    const next = browser.nextDialog();
+    const dialog = next.promise.then((message) => `NATIVE DIALOG OPENED during ${name}: "${message}". The page is waiting for it - call handle_dialog ("accept" to confirm/OK, "dismiss" to cancel).`);
     try {
-      return String(await tool.invoke(args));
-    } catch (error) {
-      return errorText(`invalid call to ${name}`, error);
+      return await Promise.race([invocation, dialog]);
+    } finally {
+      next.cancel();
     }
   }
 

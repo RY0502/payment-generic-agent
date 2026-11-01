@@ -17,6 +17,9 @@ const SITE: Record<string, string> = {
   "/qr": `<div class="qr"><p>Scan QR</p>${QR}</div><script>setTimeout(()=>location.href='/done',300)</script>`,
   "/done": `<h1>Payment Successful</h1><p>Transaction reference number TX1</p>`,
   "/nodues": `<h1>Bill details</h1><p>Payable amount 0.00. No dues.</p>`,
+  "/confirm": `<input placeholder="Advance Payment" id="adv" onchange="if(confirm('No amount is due, do you still want to make a payment'))document.getElementById('pg').style.display='block'">
+    <div id="pg" style="display:none"><h3>Payment Gateway</h3><div style="height:0"><input type="radio" name="x_paymentGateWay" title="Bill Desk" style="opacity:0;width:18px;height:13px"></div>
+    <button onclick="location.href='/done'">Pay Now</button></div>`,
 };
 
 const PROMPT = "Pay Airtel postpaid at {URL}/ for mobile number 9899892558, amount 10 rs, email ravi_yadav0502@yahoo.in";
@@ -121,6 +124,24 @@ describe("payment agent graph", () => {
 
     const down = await createPaymentAgent(deps(new FakeLlm(["THROW:a", "THROW:b", "THROW:c", "THROW:d"]))).invoke(buildInitialState({ paymentData: { accountNumber: "1" }, targetUrl: `${site.url}/nodues` }));
     expect(down.error).toBe("LLM providers unavailable");
+  });
+
+  it("surfaces native dialogs opened mid-action, blocks other tools until handled, then follows the gateway suggestion", async () => {
+    const llm = new FakeLlm([
+      reply("fill_fields", { fields: [{ description: "Advance Payment", dataKey: "amount" }] }),
+      reply("click", { description: "Pay Now" }),
+      reply("handle_dialog", { action: "accept" }),
+      reply("select_option", { optionName: "Bill Desk" }),
+      reply("click", { description: "Pay Now" }),
+    ]);
+    const agent = createPaymentAgent(deps(llm));
+    const result = await agent.invoke(buildInitialState({ paymentData: { accountNumber: "1", amount: "10" }, targetUrl: `${site.url}/confirm` }));
+    const prompts = llm.calls.map((c) => c.prompt);
+    expect(prompts[1]).toContain('NATIVE DIALOG OPENED during fill_fields: "No amount is due, do you still want to make a payment"');
+    expect(prompts[2]).toContain("ERROR: a native browser dialog is open");
+    expect(prompts[3]).toMatch(/SUGGESTED NEXT ACTION: select_option\(\{"elementId":"e\d+","optionName":"Bill Desk"\}\)/);
+    expect(prompts[4]).toContain('Payment gateway "Bill Desk" is selected: click the Pay Now');
+    expect(result.isPaymentComplete).toBe(true);
   });
 
   it("detects success automatically after an action and handles unreachable sites", async () => {

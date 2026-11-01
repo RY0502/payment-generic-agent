@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { PAGE_MARKER } from "../src/history.js";
 import { createAllTools, formatToolDocs } from "../src/tools/index.js";
-import { errorText, fillFields } from "../src/tools/browser-tools.js";
+import { errorText, fillFields, methodGuard, siteAmount } from "../src/tools/browser-tools.js";
 import { extractQr, runOtpFlow, waitForPaymentCompletion } from "../src/tools/payment-tools.js";
 import { closeBrowser, fakeFetch, pageWith, serve, sessionFor } from "./helpers.js";
 
@@ -64,6 +64,28 @@ describe("browser tools", () => {
     await page.close();
   });
 
+  it("enforces amount rules: only dataKey amount, never typed when absent, site amount kept, else MISSING_DATA", async () => {
+    const page = await pageWith('<input placeholder="Total Demand" value="1,250.00" readonly><input placeholder="Advance Payment"><input placeholder="Enter Amount">');
+    const withAmount = sessionFor(page, { accountNumber: "154431846", amount: "10" }).session;
+    expect(await fillFields(withAmount, [{ description: "Enter Amount", dataKey: "accountNumber" }])).toContain('can only be filled with dataKey "amount"');
+    expect(await fillFields(withAmount, [{ description: "Enter Amount", dataKey: "amount" }])).toContain('✓ "Enter Amount"');
+
+    const noAmount = sessionFor(page, { accountNumber: "154431846" }).session;
+    await noAmount.describePage("never");
+    expect(siteAmount(noAmount)).toBe("Total Demand: 1,250.00");
+    const kept = await fillFields(noAmount, [{ description: "Advance Payment", dataKey: "amount" }]);
+    expect(kept).toContain("the user gave no amount - do NOT type one. The site already shows Total Demand: 1,250.00");
+    expect(noAmount.takeSignal()).toBeNull();
+    expect(await page.inputValue('[placeholder="Advance Payment"]')).toBe("");
+
+    await page.setContent('<input placeholder="Enter Amount">');
+    await noAmount.describePage("never");
+    const failed = await fillFields(noAmount, [{ description: "Enter Amount", dataKey: "amount" }]);
+    expect(failed).toContain("FATAL: Missing required data: amount - amount was not given in the request and the site did not populate it");
+    expect(noAmount.takeSignal()).toMatchObject({ type: "fatal", code: "MISSING_DATA" });
+    await page.close();
+  });
+
   it("routes OTP-like fields to OTP entry and reports VALUE_TOO_LONG", async () => {
     const page = await pageWith('<input name="otp"><input placeholder="BP Number" maxlength="10">');
     const { session } = sessionFor(page, { otp: "4321", accountNumber: "100000127536" });
@@ -100,6 +122,20 @@ describe("browser tools", () => {
     expect(await toolOf(session, "navigate").invoke({ url: "http://127.0.0.1:1/" })).toContain("ERROR: navigation failed");
     await page.close();
     await site.close();
+  });
+
+  it("rejects card / net banking / wallet choices and points to the QR option", async () => {
+    const page = await pageWith(`<div role="tablist"><div role="tab">Net Banking</div><div role="tab">Debit Card</div><div role="tab" onclick="window.qr=1">QR Code</div></div>`);
+    const { session } = sessionFor(page);
+    expect(methodGuard(session, "Net Banking")).toContain("Choose the QR / UPI option");
+    await session.describePage("never");
+    const rejected = await toolOf(session, "click").invoke({ description: "Net Banking" });
+    expect(rejected).toMatch(/^REJECTED: "Net Banking" is not an allowed payment method.*click\(\{"elementId":"e\d+","description":"QR Code"\}\)/);
+    expect(await toolOf(session, "select_option").invoke({ optionName: "Debit Card" })).toContain("REJECTED");
+    expect(methodGuard(session, "UPI")).toBeNull();
+    expect(await toolOf(session, "click").invoke({ description: "QR Code" })).toContain("OK: clicked");
+    expect(await page.evaluate(() => (window as any).qr)).toBe(1);
+    await page.close();
   });
 
   it("converts thrown errors to text", async () => {

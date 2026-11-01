@@ -6,7 +6,7 @@
  */
 
 import type { Locator, Page } from "playwright";
-import { DISPATCH_CLICK_SCRIPT, NATIVE_SET_VALUE_SCRIPT } from "../dom-scripts.js";
+import { dispatchClickInPage, nativeSetValueInPage } from "../dom-functions.js";
 
 export interface LocatorStrategy<C> {
   name: string;
@@ -105,6 +105,7 @@ export function valuesMatch(actual: string, expected: string): boolean {
 
 /**
  * Fills an input robustly: fill() -> verify; else type key-by-key -> verify; else native setter.
+ * The field is blurred afterwards so on-change/on-blur handlers run (e.g. totals, revealing the gateway section).
  * Throws when the value could not be set.
  */
 export async function fillLocator(locator: Locator, value: string): Promise<void> {
@@ -113,13 +114,19 @@ export async function fillLocator(locator: Locator, value: string): Promise<void
     throw new Error(`VALUE_TOO_LONG: field accepts at most ${maxLength} characters but the value has ${value.length} - the user's data does not fit this field`);
   }
   await locator.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+  await setValue(locator, value);
+  await locator.blur({ timeout: 2000 }).catch(() => {});
+}
+
+/** Value-setting cascade used by fillLocator. */
+async function setValue(locator: Locator, value: string): Promise<void> {
   await locator.fill(value, { timeout: 3000 });
   if (valuesMatch(await currentValue(locator), value)) return;
   await locator.click({ timeout: 2000 }).catch(() => {});
   await locator.fill("", { timeout: 2000 }).catch(() => {});
   await locator.pressSequentially(value, { delay: 60, timeout: 10000 });
   if (valuesMatch(await currentValue(locator), value)) return;
-  await locator.evaluate(`(el) => (${NATIVE_SET_VALUE_SCRIPT})(el, ${JSON.stringify(value)})`);
+  await locator.evaluate(nativeSetValueInPage, value);
   if (!valuesMatch(await currentValue(locator), value)) throw new Error(`value did not stick (got "${await currentValue(locator)}")`);
 }
 
@@ -135,7 +142,7 @@ export async function clickLocator(locator: Locator, opts: { force?: boolean } =
   try {
     await locator.evaluate((el) => (el as HTMLElement).click());
   } catch {
-    await locator.evaluate(`(el) => (${DISPATCH_CLICK_SCRIPT})(el)`);
+    await locator.evaluate(dispatchClickInPage);
   }
 }
 

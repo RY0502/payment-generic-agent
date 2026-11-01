@@ -45,6 +45,7 @@ export class BrowserManager {
   private page: Page | null = null;
   private screenshotCounter = 0;
   private lastDialog: Dialog | null = null;
+  private dialogWaiters: ((message: string) => void)[] = [];
   private lastScreenshotPath = "";
 
   /** Launches Chromium (sparticuz build on Vercel) and prepares a stealth page. */
@@ -96,12 +97,22 @@ export class BrowserManager {
     });
   }
 
-  /** Stores native dialogs so the agent can decide how to handle them. */
+  /** Stores native dialogs so the agent can decide how to handle them, and wakes anyone waiting for one. */
   attachDialogListener(page: Page): void {
     page.on("dialog", (dialog) => {
       console.log(`Dialog detected: ${dialog.type()} - "${dialog.message()}"`);
       this.lastDialog = dialog;
+      const waiters = this.dialogWaiters.splice(0);
+      waiters.forEach((resolve) => resolve(dialog.message()));
     });
+  }
+
+  /** Promise resolving with the message of the next native dialog, plus a cancel to drop the waiter. */
+  nextDialog(): { promise: Promise<string>; cancel: () => void } {
+    let waiter: (message: string) => void = () => {};
+    const promise = new Promise<string>((resolve) => (waiter = resolve));
+    this.dialogWaiters.push(waiter);
+    return { promise, cancel: () => (this.dialogWaiters = this.dialogWaiters.filter((w) => w !== waiter)) };
   }
 
   /** Switches to a newly opened tab/popup (e.g. a payment gateway opened in a new window). */

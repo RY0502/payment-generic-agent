@@ -4,6 +4,7 @@
 
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { analysePaymentOptions, isDisallowedMethod } from "../payment-options.js";
 import { availableKeys, canonicalKey, isStandardKey, resolveValue } from "../payment-data.js";
 import type { PaymentSession } from "../session.js";
 import { clickElement } from "../strategies/click.js";
@@ -19,14 +20,47 @@ export function errorText(prefix: string, error: unknown): string {
   return `ERROR: ${prefix}: ${String(error instanceof Error ? error.message : error).split("\n")[0]}`;
 }
 
+/** Rejects card / net banking / wallet / EMI choices and points to the preferred QR / UPI option. */
+export function methodGuard(session: PaymentSession, text: string): string | null {
+  if (!isDisallowedMethod(text)) return null;
+  const view = session.lastSnapshot ? analysePaymentOptions(session.lastSnapshot, session.paymentData.paymentGateway) : null;
+  return `REJECTED: "${text}" is not an allowed payment method - pay only by UPI QR (preferred) or UPI. ${view?.suggestion ?? "Choose the QR / UPI option; if none exists call fail_payment with code BLOCKED."}`;
+}
+
 export interface FieldRequest {
   elementId?: string;
   description: string;
   dataKey: string;
 }
 
+const AMOUNT_FIELD = /\bamount\b|payable|₹|\brs\.?\b|rupees|\bdemand\b/i;
+
+/** Amount the site itself shows in an amount-like input of the latest snapshot (value > 0), if any. */
+export function siteAmount(session: PaymentSession): string | null {
+  const field = session.lastSnapshot?.elements.find(
+    (e) => (e.kind === "input" || e.kind === "textarea") && AMOUNT_FIELD.test(`${e.label} ${e.name ?? ""} ${e.placeholder ?? ""}`) && parseFloat((e.value ?? "").replace(/[^\d.]/g, "")) > 0
+  );
+  return field ? `${field.label}: ${field.value}` : null;
+}
+
+/**
+ * Amount rules: an amount field may only be filled from the user's "amount".
+ * Without a user amount the site's pre-filled amount is used; if the site shows none either, the run fails (MISSING_DATA).
+ */
+function amountCheck(session: PaymentSession, field: FieldRequest): { line: string; missing?: string } | null {
+  const isAmountField = AMOUNT_FIELD.test(field.description);
+  const key = canonicalKey(session.paymentData, field.dataKey);
+  if (isAmountField && key !== "amount") return { line: `✗ "${field.description}": an amount field can only be filled with dataKey "amount" (never ${field.dataKey}).` };
+  if (key !== "amount" || resolveValue(session.paymentData, "amount")) return null;
+  const shown = siteAmount(session);
+  if (shown) return { line: `✗ "${field.description}": the user gave no amount - do NOT type one. The site already shows ${shown}; keep it and continue with that amount.` };
+  return { line: `✗ "${field.description}": the user gave no amount and the site did not populate one`, missing: "amount" };
+}
+
 /** Fills one field from payment data; returns a result line. */
 async function fillOne(session: PaymentSession, field: FieldRequest): Promise<{ line: string; missing?: string }> {
+  const amountIssue = amountCheck(session, field);
+  if (amountIssue) return amountIssue;
   const value = resolveValue(session.paymentData, field.dataKey);
   if (!value) {
     const standard = isStandardKey(session.paymentData, field.dataKey);
@@ -56,7 +90,10 @@ export async function fillFields(session: PaymentSession, fields: FieldRequest[]
     }
   }
   if (missing.length) {
-    const reason = `Missing required data: ${Array.from(new Set(missing)).join(", ")} (needed by fields: ${fields.filter((f) => missing.includes(canonicalKey(session.paymentData, f.dataKey))).map((f) => f.description).join(", ")})`;
+    const keys = Array.from(new Set(missing));
+    const needed = fields.filter((f) => keys.includes(canonicalKey(session.paymentData, f.dataKey))).map((f) => f.description).join(", ");
+    const amountNote = keys.includes("amount") ? " - amount was not given in the request and the site did not populate it" : "";
+    const reason = `Missing required data: ${keys.join(", ")}${amountNote} (needed by fields: ${needed})`;
     session.setSignal({ type: "fatal", code: "MISSING_DATA", reason });
     lines.push(`FATAL: ${reason}`);
   }
@@ -98,6 +135,8 @@ export function createBrowserTools(session: PaymentSession) {
 
   const click = tool(
     async ({ elementId: id, description }) => {
+      const rejected = methodGuard(session, description);
+      if (rejected) return rejected;
       try {
         const before = await session.browser.getCurrentUrl();
         const outcome = await clickElement({ page: session.page(), description, elementId: id, vision: session.vision });
@@ -115,6 +154,8 @@ export function createBrowserTools(session: PaymentSession) {
 
   const selectOption = tool(
     async ({ elementId: id, optionName }) => {
+      const rejected = methodGuard(session, optionName);
+      if (rejected) return rejected;
       try {
         const outcome = await selectPaymentOption({ page: session.page(), optionName, elementId: id });
         if (!outcome.ok) return `ERROR: could not select "${optionName}": ${outcome.message}`;

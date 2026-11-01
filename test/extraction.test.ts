@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildExtractionPrompt, extractPaymentRequest, groundedIn, mergeExtraction, MissingDataError, regexExtract, validateRequest } from "../src/extraction.js";
+import { buildExtractionPrompt, extractPaymentRequest, groundedIn, mergeExtraction, MissingDataError, pickAmount, regexExtract, statedAmounts, validateRequest } from "../src/extraction.js";
 import { FakeLlm } from "./helpers.js";
 
 const JIO = "Pay Jio bill at https://www.jio.com/selfcare/paybill/mobility for jio number 9899832545, amount 10 rupees, email ravi_yadav0502@yahoo.in";
@@ -33,6 +33,21 @@ describe("extraction", () => {
     expect(req.paymentData.customerName).toBeUndefined();
     expect(req.paymentData.circle).toBeUndefined();
     expect(mergeExtraction("mobile number 9899832545 at https://x.com", null, regexExtract("mobile number 9899832545 at https://x.com")).paymentData.accountNumber).toBe("9899832545");
+  });
+
+  it("only treats explicitly stated numbers as amounts and grounds numbers as whole tokens", () => {
+    const igl = "Pay IGL gas bill at https://webonline.igl.co.in:8077/x for BP number 1000125036, email ravi_yadav0502@yahoo.in";
+    const bses = "Pay BSES bill at https://www.bsesdelhi.com/web/brpl/quick-pay for CA number 154431846";
+    expect(groundedIn(igl, "10")).toBeUndefined();
+    expect(groundedIn(bses, "15")).toBeUndefined();
+    expect(groundedIn(igl, "1000125036")).toBe("1000125036");
+    expect(mergeExtraction(igl, { amount: "10", accountNumber: "1000125036" }, regexExtract(igl)).paymentData.amount).toBeUndefined();
+    expect(mergeExtraction(bses, { amount: "Pay10" }, regexExtract(bses)).paymentData.amount).toBeUndefined();
+    expect(statedAmounts("pay Rs.250, then amount: 99.50 and 10 rupees; ₹5")).toEqual(["250", "99.50", "10", "5"]);
+    expect(statedAmounts("pay 10 for jio 9899832545")).toEqual([]);
+    expect(pickAmount("amount 10 rs, rs 20", "20")).toBe("20");
+    expect(pickAmount("amount 10 rs", "999")).toBe("10");
+    expect(pickAmount("no amount here", "10")).toBeUndefined();
   });
 
   it("validates required data", () => {

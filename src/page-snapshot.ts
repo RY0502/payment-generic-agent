@@ -5,6 +5,7 @@
 
 import type { Frame, Locator, Page } from "playwright";
 import { QR_EXTRACT_SCRIPT, SNAPSHOT_SCRIPT } from "./dom-scripts.js";
+import { analysePaymentOptions, formatPaymentOptions } from "./payment-options.js";
 import type { PageSnapshot, SnapshotElement } from "./types.js";
 
 const FIELD_KINDS = new Set(["input", "textarea", "select"]);
@@ -65,6 +66,7 @@ export function rankElement(el: SnapshotElement): number {
   if (/pay|proceed|continue|submit|next|verify|login|get details|fetch|qr|upi|confirm|ok/i.test(el.label)) score += 10;
   if (el.disabled) score -= 5;
   if (el.inChrome) score -= 60;
+  if (el.inSidebar) score -= 40;
   return score;
 }
 
@@ -87,6 +89,7 @@ export function formatElement(el: SnapshotElement): string {
   if (el.required) parts.push("required");
   if (el.disabled) parts.push("(disabled)");
   if (el.inDialog) parts.push("[in dialog]");
+  if (el.inSidebar) parts.push("[sidebar widget - ignore]");
   if (el.frame > 0) parts.push(`[iframe ${el.frame}]`);
   return parts.join(" ");
 }
@@ -103,8 +106,8 @@ export function dedupeElements(elements: SnapshotElement[]): SnapshotElement[] {
   });
 }
 
-/** Produces the compact, LLM-friendly text view of a snapshot. */
-export function formatSnapshot(snapshot: PageSnapshot, maxElements: number, textChars = 1200): string {
+/** Produces the compact, LLM-friendly text view of a snapshot (incl. detected payment options + suggested next action). */
+export function formatSnapshot(snapshot: PageSnapshot, maxElements: number, textChars = 1200, preferredGateway?: string): string {
   const unique = dedupeElements(snapshot.elements.filter((e) => !isNoise(e)));
   const kept = [...unique].sort((a, b) => rankElement(b) - rankElement(a)).slice(0, maxElements);
   const keptIds = new Set(kept.map((e) => e.id));
@@ -120,6 +123,8 @@ export function formatSnapshot(snapshot: PageSnapshot, maxElements: number, text
   if (snapshot.headings.length) lines.push(`HEADINGS: ${snapshot.headings.join(" | ")}`);
   if (snapshot.hasDialog) lines.push(`OPEN DIALOG/POPUP: ${snapshot.dialogText || "(no text)"}`);
   lines.push(`FLAGS: ${flags.join(", ")}`);
+  const options = formatPaymentOptions(analysePaymentOptions(snapshot, preferredGateway));
+  if (options) lines.push(options);
   lines.push(`INPUT FIELDS (${fields.length}):`, ...(fields.length ? fields.map(formatElement) : ["(none)"]));
   lines.push(`CLICKABLE ELEMENTS (${actions.length}${unique.length > kept.length ? `, ${unique.length - kept.length} low-priority omitted` : ""}):`);
   lines.push(...(actions.length ? actions.map(formatElement) : ["(none)"]));

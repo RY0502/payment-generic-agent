@@ -22,6 +22,8 @@ export class PaymentSession {
   qrScanned = false;
   otpRequests = 0;
   noDuesWarned = false;
+  /** Latest snapshot rendered for the LLM (used by tools for payment-option guards). */
+  lastSnapshot: PageSnapshot | null = null;
   private lastVisionUrl = "";
   private signal: SessionSignal | null = null;
   readonly sleep: (ms: number) => Promise<void>;
@@ -73,7 +75,8 @@ export class PaymentSession {
       return `NATIVE BROWSER DIALOG IS OPEN: "${this.browser.getDialogMessage()}". Use handle_dialog to accept or dismiss it before anything else.`;
     }
     const snap = await this.snapshot();
-    const lines = [formatSnapshot(snap, CONFIG.snapshotMaxElements)];
+    this.lastSnapshot = snap;
+    const lines = [formatSnapshot(snap, CONFIG.snapshotMaxElements, undefined, this.paymentData.paymentGateway)];
     const pageKey = snap.url.split("#")[0];
     if (vision === "always" || (vision === "auto" && pageKey !== this.lastVisionUrl)) {
       this.lastVisionUrl = pageKey;

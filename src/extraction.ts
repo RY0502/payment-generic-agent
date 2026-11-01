@@ -32,28 +32,51 @@ User request:
 ${message}`;
 }
 
+/** Amount patterns: a number is only an amount when it is explicitly marked as one (amount / Rs / ₹ / INR / rupees). */
+const AMOUNT_PATTERNS = [
+  /\bamount\s*(?:of|is|:|-|=)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d{1,2})?)(?![\d.])/gi,
+  /(?:\brs\.?|\binr|₹)\s*(\d+(?:\.\d{1,2})?)(?![\d.])/gi,
+  /(?<![\d.])(\d+(?:\.\d{1,2})?)\s*(?:rs\b|rupees\b|inr\b|₹)/gi,
+];
+
+/** All explicitly stated amounts in the prompt, in order of appearance. */
+export function statedAmounts(message: string): string[] {
+  const found: { index: number; value: string }[] = [];
+  for (const re of AMOUNT_PATTERNS) for (const m of message.matchAll(re)) found.push({ index: m.index ?? 0, value: m[1] });
+  return Array.from(new Set(found.sort((a, b) => a.index - b.index).map((f) => f.value)));
+}
+
+/** Accepts the LLM's amount only if it equals an explicitly stated amount; otherwise the first stated amount (or none). */
+export function pickAmount(message: string, llmAmount: unknown): string | undefined {
+  const stated = statedAmounts(message);
+  const llm = parseFloat(String(llmAmount ?? "").replace(/[^\d.]/g, ""));
+  return stated.find((s) => Number.isFinite(llm) && parseFloat(s) === llm) ?? stated[0];
+}
+
 /** Regex-based extraction used as a fallback and to cross-check the LLM. */
 export function regexExtract(message: string): Partial<PaymentData> & { targetUrl?: string } {
   const url = message.match(/https?:\/\/[^\s"'<>,\]]+/i)?.[0]?.replace(/[.)]+$/, "");
   const email = message.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/)?.[0];
-  const amount =
-    message.match(/amount\s*(?:of|is|:|-)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d{1,2})?)/i)?.[1] ??
-    message.match(/(?:rs\.?|inr|₹)\s*(\d+(?:\.\d{1,2})?)/i)?.[1] ??
-    message.match(/(\d+(?:\.\d{1,2})?)\s*(?:rs\b|rupees|inr)/i)?.[1];
+  const amount = statedAmounts(message)[0];
   const account = message.match(/(?:account|ca|bp|consumer|customer|k)\s*(?:number|no\.?|id)?\s*(?:is|:|-)?\s*([A-Z0-9]{6,20})\b/i)?.[1];
   const mobile = message.match(/(?:mobile|phone|jio|airtel)\s*(?:number|no\.?)?\s*(?:is|:|-)?\s*(\d{10})\b/i)?.[1];
   return { targetUrl: url, email, amount, accountNumber: account, mobileNumber: mobile };
 }
 
-/** Keeps only values that literally appear in the prompt (digits compared loosely). */
+/**
+ * Keeps only values that literally appear in the prompt. Numeric values must appear as a whole number
+ * (so "10" is NOT grounded by "1000125036"); text values may appear anywhere (case-insensitive).
+ */
 export function groundedIn(message: string, value: string | undefined): string | undefined {
   if (!value) return undefined;
   const v = String(value).trim();
   if (!v) return undefined;
-  if (message.toLowerCase().includes(v.toLowerCase())) return v;
-  const digits = v.replace(/\D/g, "");
-  if (digits.length >= 1 && /^[\d\s.,₹-]+$/.test(v) && message.replace(/\D/g, " ").split(/\s+/).includes(digits.replace(/^0+(?=\d)/, ""))) return v;
-  return undefined;
+  if (/^[\d\s.,₹-]+$/.test(v)) {
+    const digits = v.replace(/[^\d.]/g, "");
+    const tokens = message.split(/[^\d.]+/).map((t) => t.replace(/^\.+|\.+$/g, ""));
+    return digits && tokens.includes(digits) ? v : undefined;
+  }
+  return message.toLowerCase().includes(v.toLowerCase()) ? v : undefined;
 }
 
 /** Merges LLM + regex results, grounding every user-data value in the prompt. */
@@ -66,7 +89,7 @@ export function mergeExtraction(message: string, llm: any, regex: ReturnType<typ
     billerName: llm?.billerName || undefined,
     accountNumber: pick("accountNumber") ?? pick("mobileNumber"),
     mobileNumber: pick("mobileNumber"),
-    amount: pick("amount")?.replace(/[^\d.]/g, ""),
+    amount: pickAmount(message, llm?.amount),
     email: pick("email"),
     customerName: pick("customerName"),
     upiId: pick("upiId"),

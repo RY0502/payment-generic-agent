@@ -74,6 +74,33 @@ describe("page snapshot", () => {
     await page.close();
   });
 
+  it("finds transparent gateway radios in zero-height cells, names logo-only options and ignores sidebar widgets (BSES/IGL patterns)", async () => {
+    const page = await pageWith(`
+      <div style="display:flex">
+        <form id="side" style="width:200px"><input name="caNo" placeholder="CA Number"><img src="/captcha/img.jpg" alt="captcha" width="100" height="30"><input name="captchaText"><button>quick pay</button></form>
+        <form id="main" style="width:900px">
+          <h3>Payment Gateway</h3>
+          <div class="cell" style="height:0"><input type="radio" name="x_paymentGateWay" title="Bill Desk" value="BillDesk" style="opacity:0;width:18px;height:13px"><span class="icon"></span></div>
+          <div class="col"><div class="cell" style="height:0"><input type="radio" name="x_paymentGateWay" value="p10" style="opacity:0;width:18px;height:13px"></div><div><img src="/images/pay10.png" width="60" height="20"></div></div>
+          <div class="cell" style="height:0"><input type="radio" name="x_paymentGateWay" value="Cashfree" style="opacity:0;width:18px;height:13px"></div>
+          <div><input type="radio" name="pg2" style="opacity:0;width:18px;height:13px"><img src="/o/images/select-for-bill_desk-logo.png" width="60" height="20"></div>
+          <div style="cursor:pointer"><img src="/icons/razorpay.png" width="60" height="20"></div>
+          <div style="display:none"><input type="radio" name="hidden_pg" title="Hidden"></div>
+          <button>Pay Now</button>
+        </form>
+      </div>`);
+    const snap = await takeSnapshot(page);
+    const labels = snap.elements.map((e) => e.label);
+    expect(labels).toEqual(expect.arrayContaining(["Bill Desk", "pay10", "Cashfree", "select for bill desk", "razorpay"]));
+    expect(labels).not.toContain("Hidden");
+    expect(snap.hasCaptcha).toBe(false);
+    expect(snap.elements.find((e) => e.name === "caNo")?.inSidebar).toBe(true);
+    const text = formatSnapshot(snap, 60, 100, "Bill Desk");
+    expect(text).toContain("[sidebar widget - ignore]");
+    expect(text).toMatch(/SUGGESTED NEXT ACTION: select_option\(\{"elementId":"e\d+","optionName":"Bill Desk"\}\)/);
+    await page.close();
+  });
+
   it("ranks, formats, dedupes and filters noise", () => {
     const base: SnapshotElement = { id: "e1", kind: "button", label: "Pay", tag: "button", frame: 0 };
     expect(rankElement({ ...base, inDialog: true })).toBeGreaterThan(rankElement(base));

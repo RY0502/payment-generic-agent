@@ -7,7 +7,8 @@ import { cleanText, clickLocator, escapeRegex, fillLocator, looseRegex, q, runSt
 import { selectDropdown } from "../src/strategies/dropdown.js";
 import { fillField } from "../src/strategies/fill.js";
 import { enterOtp, findOtpInputs, findOtpSubmit } from "../src/strategies/otp.js";
-import { nameVariants, selectPaymentOption } from "../src/strategies/payment-option.js";
+import { nameVariants, selectionState, selectPaymentOption } from "../src/strategies/payment-option.js";
+import { dispatchClickInPage, nativeSetValueInPage } from "../src/dom-functions.js";
 import { closeBrowser, fakeVision, pageWith } from "./helpers.js";
 
 afterAll(closeBrowser);
@@ -60,6 +61,44 @@ describe("common helpers", () => {
     const page = await pageWith(`${CLICK_LOG}<button data-k="b" style="position:absolute;top:0">B</button><div style="position:absolute;top:0;width:500px;height:500px;background:#fff"></div>`);
     await clickLocator(page.locator("button"));
     expect(await clicked(page)).toEqual(["b"]);
+    await page.close();
+  });
+});
+
+describe("in-page element functions", () => {
+  it("reads selection state from native, ARIA, nested input and class markers", async () => {
+    const page = await pageWith(`
+      <input type="radio" id="n" checked><input type="checkbox" id="n2">
+      <span role="radio" id="a" aria-checked="true"></span><span role="radio" id="a2" aria-checked="false"></span>
+      <div id="t" role="tab" aria-selected="false"></div><span id="w"><input type="radio" checked></span>
+      <li id="c" class="active"></li><li id="x"></li>`);
+    const state = (id: string) => selectionState(page.locator(`#${id}`));
+    expect(await Promise.all(["n", "n2", "a", "a2", "t", "w", "c", "x"].map(state))).toEqual([true, false, true, false, false, true, true, null]);
+    expect(await selectionState(page.locator("#missing"))).toBeNull();
+    await page.close();
+  });
+
+  it("sets values natively with events and dispatches clicks on the clickable ancestor", async () => {
+    const page = await pageWith(`<input id="i"><textarea id="ta"></textarea><button id="b" onclick="window.hit=(window.hit||0)+1"><span id="s">x</span></button>
+      <script>window.ev=[];document.getElementById('i').addEventListener('change',()=>ev.push('change'));</script>`);
+    expect(await page.locator("#i").evaluate(nativeSetValueInPage, "42")).toBe("42");
+    expect(await page.locator("#ta").evaluate(nativeSetValueInPage, "note")).toBe("note");
+    expect(await page.evaluate(() => (window as any).ev)).toEqual(["change"]);
+    expect(await page.locator("#s").evaluate(dispatchClickInPage)).toBe(true);
+    expect(await page.evaluate(() => (window as any).hit)).toBe(1);
+    await page.close();
+  });
+
+  it("re-clicks the snapshot element when a broad strategy did not select it, also after a re-render", async () => {
+    const page = await pageWith(`<div>Select for BILL DESK <span>
+      <span id="billdesk" role="radio" aria-checked="false" title="Select for BILL DESK" style="display:inline-block;width:16px;height:16px" onclick="const n=this.cloneNode(true);n.setAttribute('aria-checked','true');n.removeAttribute('data-pa-id');this.replaceWith(n)"></span></span></div>`);
+    const snap = await takeSnapshot(page);
+    const el = snap.elements.find((e) => e.domId === "billdesk")!;
+    expect((await selectPaymentOption({ page, optionName: el.label, elementId: el.id })).strategy).toBe("snapshot-ref (verified)");
+    expect(await page.getAttribute("#billdesk", "aria-checked")).toBe("true");
+    await page.setContent('<span id="stuck" role="radio" aria-checked="false" title="Stuck PG" style="display:inline-block;width:16px;height:16px"></span>');
+    const stuck = (await takeSnapshot(page)).elements.find((e) => e.domId === "stuck")!;
+    expect(await selectPaymentOption({ page, optionName: "Stuck PG", elementId: stuck.id })).toMatchObject({ ok: false, message: expect.stringContaining("still not selected") });
     await page.close();
   });
 });

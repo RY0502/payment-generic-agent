@@ -60,6 +60,8 @@ export interface SnapshotElement {
   inDialog?: boolean;
   /** Whether it lives in page chrome (header / footer / navigation). */
   inChrome?: boolean;
+  /** Whether it belongs to a secondary sidebar widget/form (e.g. a quick-pay box next to the main content). */
+  inSidebar?: boolean;
 }
 
 /** Full structured view of the current page, produced in ONE pass. */
